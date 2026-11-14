@@ -26,6 +26,8 @@ jobs:
       - run: python -m homenotif fetch
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Anibis answers 403 to GitHub's data-centre IPs; the repo variable turns it back on when that changes
+          HOMENOTIF_ANIBIS: ${{ vars.HOMENOTIF_ANIBIS || '0' }}
           HOMENOTIF_SMTP_USER: ${{ secrets.HOMENOTIF_SMTP_USER }}
           HOMENOTIF_SMTP_PASSWORD: ${{ secrets.HOMENOTIF_SMTP_PASSWORD }}
           HOMENOTIF_IMAP_USER: ${{ secrets.HOMENOTIF_IMAP_USER }}
