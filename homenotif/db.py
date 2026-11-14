@@ -23,11 +23,13 @@ CREATE TABLE IF NOT EXISTS listings (
     fingerprint TEXT,
     duplicate_of INTEGER REFERENCES listings(id),
     matched INTEGER NOT NULL,
+    zone INTEGER,                         -- 1-based index into [[zones]], NULL = outside / unknown
     notified_at TEXT,
     status TEXT NOT NULL DEFAULT 'new',   -- new, favorite, applied, hidden
     UNIQUE (source, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_listings_fingerprint ON listings(fingerprint);
+CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT);
 """
 
 STATUSES = ("new", "favorite", "applied", "hidden")
@@ -42,14 +44,39 @@ def connect(path):
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    if "zone" not in {r["name"] for r in conn.execute("PRAGMA table_info(listings)")}:
+        conn.execute("ALTER TABLE listings ADD COLUMN zone INTEGER")
     return conn
+
+
+def rematch(conn, evaluate):
+    """Re-apply the current criteria to every stored listing, so config changes take
+    effect immediately. Old listings that start matching are not announced."""
+    fields = Listing.__dataclass_fields__
+    for row in conn.execute("SELECT * FROM listings").fetchall():
+        matched, zone = evaluate(Listing(**{k: row[k] for k in fields}))
+        if (bool(row["matched"]), row["zone"]) != (matched, zone):
+            conn.execute(
+                "UPDATE listings SET matched = ?, zone = ?, notified_at = COALESCE(notified_at, ?) WHERE id = ?",
+                (int(matched), zone, now(), row["id"]))
+    conn.commit()
+
+
+def get_state(conn, key):
+    row = conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_state(conn, key, value):
+    conn.execute("INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (key, value))
+    conn.commit()
 
 
 def known_ids(conn, source):
     return {r[0] for r in conn.execute("SELECT source_id FROM listings WHERE source = ?", (source,))}
 
 
-def insert(conn, l: Listing, matched: bool, silent: bool) -> bool:
+def insert(conn, l: Listing, matched: bool, zone, silent: bool) -> bool:
     """Store a listing. Returns False if it was already known. `silent` stores it
     as already notified (used for the first import of a source)."""
     if conn.execute("SELECT 1 FROM listings WHERE source = ? AND source_id = ?", (l.source, l.source_id)).fetchone():
@@ -60,7 +87,7 @@ def insert(conn, l: Listing, matched: bool, silent: bool) -> bool:
     ).fetchone() if fp else None
     row = asdict(l) | {
         "first_seen": now(), "fingerprint": fp, "duplicate_of": dup["id"] if dup else None,
-        "matched": int(matched), "notified_at": now() if silent else None,
+        "matched": int(matched), "zone": zone, "notified_at": now() if silent else None,
     }
     conn.execute(f"INSERT INTO listings ({', '.join(row)}) VALUES ({', '.join(':' + k for k in row)})", row)
     conn.commit()
@@ -70,7 +97,8 @@ def insert(conn, l: Listing, matched: bool, silent: bool) -> bool:
 def pending(conn):
     """Matched listings nobody has been told about yet."""
     return conn.execute(
-        "SELECT * FROM listings WHERE matched = 1 AND notified_at IS NULL AND duplicate_of IS NULL ORDER BY id"
+        "SELECT * FROM listings WHERE matched = 1 AND notified_at IS NULL AND duplicate_of IS NULL "
+        "ORDER BY zone IS NULL, zone, id"
     ).fetchall()
 
 
@@ -84,13 +112,16 @@ def mark_notified(conn, ids):
 def since(conn, iso):
     return conn.execute(
         "SELECT * FROM listings WHERE matched = 1 AND duplicate_of IS NULL AND status != 'hidden' "
-        "AND first_seen >= ? ORDER BY id DESC", (iso,)
+        "AND first_seen >= ? ORDER BY zone IS NULL, zone, id DESC", (iso,)
     ).fetchall()
 
 
-def browse(conn, status="", source="", include_unmatched=False, limit=300):
+def browse(conn, status="", source="", zone=None, include_unmatched=False, limit=300):
     sql = "SELECT * FROM listings WHERE duplicate_of IS NULL"
     args = []
+    if zone:
+        sql += " AND zone = ?"
+        args.append(zone)
     if status:
         sql += " AND status = ?"
         args.append(status)

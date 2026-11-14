@@ -35,7 +35,7 @@ def send(cfg, listings, subject):
     if not n["enabled"]:
         print(f"\n{subject}")
         for l in listings:
-            print(f"  [{l['source']}] CHF {_chf(l['rent'])} | {l['rooms'] or '?'} rooms | "
+            print(f"  [zone {l['zone'] or '-'}] [{l['source']}] CHF {_chf(l['rent'])} | {l['rooms'] or '?'} rooms | "
                   f"{l['zipcode'] or ''} {l['city'] or ''} | {l['title'][:60]}\n    {l['url']}")
         return
     password = os.environ.get(n["password_env"])
@@ -46,10 +46,11 @@ def send(cfg, listings, subject):
     msg["From"] = n["from"]
     msg["To"] = n["to"]
     msg.set_content("\n\n".join(
-        f"{l['title']}\nCHF {_chf(l['rent'])} - {l['rooms'] or '?'} rooms - {l['zipcode'] or ''} {l['city'] or ''}\n{l['url']}"
+        f"{'[zone %d] ' % l['zone'] if l['zone'] else ''}{l['title']}\nCHF {_chf(l['rent'])} - {l['rooms'] or '?'} rooms - {l['zipcode'] or ''} {l['city'] or ''}\n{l['url']}"
         for l in listings))
     html = templates.get_template("email.html").render(
-        listings=listings, subject=subject, dashboard_url=cfg["app"]["dashboard_url"])
+        listings=listings, subject=subject, dashboard_url=cfg["app"]["dashboard_url"],
+        zone_names=[z["name"] for z in cfg["zones"]])
     msg.add_alternative(html, subtype="html")
     with smtplib.SMTP(n["smtp_host"], n["smtp_port"], timeout=30) as smtp:
         smtp.starttls()

@@ -16,6 +16,7 @@
         <b>CHF {{ l.rent | chf }}</b> &middot; {{ l.rooms or '?' }} rooms{% if l.area %} &middot; {{ l.area | int }} m²{% endif %}
       </div>
       <div style="margin-top:4px;font-size:13px;color:#666">
+        {% if l.zone %}<b style="color:#fff;background:{{ {1: '#2e8540', 2: '#1a5fb4', 3: '#c46200'}.get(l.zone, '#8a3ab9') }};padding:1px 6px;border-radius:9px">{{ zone_names[l.zone - 1] }}</b>{% endif %}
         {{ l.street or '' }} {{ l.zipcode or '' }} {{ l.city or '' }} &middot; {{ l.source }}
       </div>
     </td>

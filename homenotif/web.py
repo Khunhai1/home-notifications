@@ -1,24 +1,28 @@
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import db
+from . import db, npa
+from .config import all_npas
 from .notify import _chf, templates
 
 
 def create_app(cfg, conn):
     app = FastAPI(title="Flat finder", docs_url=None, redoc_url=None)
+    zones = [{"number": n, "name": z["name"],
+              "places": [(code, npa.localities(code)) for code in z.get("npa", [])]}
+             for n, z in enumerate(cfg["zones"], 1)]
 
     @app.get("/", response_class=HTMLResponse)
-    def index(status: str = "", source: str = "", all: str = ""):
-        listings = db.browse(conn, status, source, include_unmatched=bool(all))
+    def index(status: str = "", source: str = "", zone: int = 0, all: str = ""):
+        listings = db.browse(conn, status, source, zone, include_unmatched=bool(all))
         points = [
-            {"id": l["id"], "lat": l["lat"], "lon": l["lon"],
+            {"id": l["id"], "lat": l["lat"], "lon": l["lon"], "zone": l["zone"],
              "label": f"CHF {_chf(l['rent'])} · {l['rooms'] or '?'} rooms"}
             for l in listings if l["lat"] is not None and l["lon"] is not None
         ]
         return templates.get_template("index.html").render(
-            listings=listings, points=points, center=cfg["search"]["center"],
-            status=status, source=source, show_all=bool(all), sources=db.sources(conn))
+            listings=listings, points=points, center=npa.center(all_npas(cfg)), zones=zones,
+            status=status, source=source, zone=zone, show_all=bool(all), sources=db.sources(conn))
 
     @app.post("/listing/{listing_id}/status")
     def set_status(listing_id: int, request: Request, status: str = Form()):

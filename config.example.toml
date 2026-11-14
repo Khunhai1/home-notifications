@@ -6,10 +6,36 @@ max_rooms = 4.5
 min_rent = 0
 max_rent = 2500          # CHF per month
 min_area = 0             # m², 0 = don't care
-center = [46.948, 7.447] # lat, lon of where you want to live (here: Bern)
-radius_km = 8
-zipcodes = []            # optional whitelist, e.g. [3005, 3006]; used when a listing has no coordinates
 exclude_keywords = ["WG-Zimmer", "Parkplatz"]  # case-insensitive, matched against title + description
+
+# Where you want to live, as postcode (NPA) lists. Zones are in order of preference:
+# listings are tagged with their zone, and listings outside every zone don't match.
+# A postcode often covers several villages (shown in the comments); you can only include all of them.
+# Show the full list with: python -m homenotif zones
+
+[[zones]]
+name = "Bern city"
+npa = [
+  3011,  # Bern (old town)
+  3012,  # Bern (Länggasse)
+  3013,  # Bern (Lorraine)
+]
+
+[[zones]]
+name = "Around Bern"
+npa = [
+  3005,  # Bern (Kirchenfeld)
+  3006,  # Bern (Ostring)
+  3007,  # Bern (Mattenhof)
+]
+
+[[zones]]
+name = "A bit further"
+npa = [
+  3072,  # Ostermundigen
+  3084,  # Wabern
+  3097,  # Liebefeld
+]
 
 [flatfox]
 enabled = true

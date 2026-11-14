@@ -1,6 +1,6 @@
 """Flatfox public API: /pin/ lists listing ids inside a bounding box, /public-listing/ returns details."""
-import math
-
+from .. import npa
+from ..config import all_npas
 from ..models import Listing
 from . import http_client
 
@@ -8,13 +8,6 @@ API = "https://flatfox.ch/api/v1"
 SITE = "https://flatfox.ch"
 MAX_PINS = 1000  # API limit per request
 CHUNK = 50
-
-
-def _bbox(center, radius_km):
-    lat, lon = center
-    dlat = radius_km / 111.0
-    dlon = radius_km / (111.32 * math.cos(math.radians(lat)))
-    return lat - dlat, lon - dlon, lat + dlat, lon + dlon  # south, west, north, east
 
 
 def _pins(client, box, categories, depth=0):
@@ -61,12 +54,13 @@ def _to_listing(r):
 
 
 def fetch(cfg, known_ids):
-    search = cfg["search"]
-    if not search["center"] or not search["radius_km"]:
-        raise RuntimeError("flatfox needs [search] center and radius_km")
+    npas = all_npas(cfg)
+    if not npas:
+        raise RuntimeError("flatfox needs at least one [[zones]] entry to know where to search")
     with http_client() as client:
-        pins = _pins(client, _bbox(search["center"], search["radius_km"]), cfg["flatfox"]["categories"])
-        max_rent = search["max_rent"]
+        # the box around all zones; listings in it but outside the zones are filtered out later
+        pins = _pins(client, npa.bbox(npas), cfg["flatfox"]["categories"])
+        max_rent = cfg["search"]["max_rent"]
         new = [pk for pk, p in pins.items()
                if str(pk) not in known_ids and not (max_rent and (p.get("price_display") or 0) > max_rent)]
         for i in range(0, len(new), CHUNK):

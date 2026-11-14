@@ -32,6 +32,14 @@
   .actions { display:flex; gap:6px; padding:0 12px 12px; }
   .actions button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
   .empty { color:var(--muted); padding:40px 0; text-align:center; }
+  .z1 { --z:#2e8540; } .z2 { --z:#1a5fb4; } .z3 { --z:#c46200; } .z4 { --z:#8a3ab9; } .z0 { --z:#77776f; }
+  .zone { color:#fff; background:var(--z); border-color:var(--z); font-weight:600; }
+  .card.zoned { border-top:4px solid var(--z); }
+  details.zones { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin-bottom:14px; }
+  details.zones summary { cursor:pointer; font-weight:600; }
+  .zone-list { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin-top:8px; font-size:13px; }
+  .zone-list h3 { font-size:14px; margin:0 0 4px; }
+  .zone-list p { margin:2px 0; }
 </style>
 </head>
 <body>
@@ -40,10 +48,16 @@
 
   <div class="bar">
     {% for value, label in [("", "All"), ("new", "New"), ("favorite", "Favorites"), ("applied", "Applied"), ("hidden", "Hidden")] %}
-    <a class="tab {{ 'on' if status == value }}" href="?status={{ value }}&source={{ source }}&all={{ 1 if show_all else '' }}">{{ label }}</a>
+    <a class="tab {{ 'on' if status == value }}" href="?status={{ value }}&source={{ source }}&zone={{ zone or '' }}&all={{ 1 if show_all else '' }}">{{ label }}</a>
     {% endfor %}
     <form method="get">
       <input type="hidden" name="status" value="{{ status }}">
+      {% if zones %}
+      <select name="zone" onchange="this.form.submit()">
+        <option value="">All zones</option>
+        {% for z in zones %}<option value="{{ z.number }}" {{ 'selected' if z.number == zone }}>Zone {{ z.number }}: {{ z.name }}</option>{% endfor %}
+      </select>
+      {% endif %}
       <select name="source" onchange="this.form.submit()">
         <option value="">All sources</option>
         {% for s in sources %}<option value="{{ s }}" {{ 'selected' if s == source }}>{{ s }}</option>{% endfor %}
@@ -52,18 +66,33 @@
     </form>
   </div>
 
+  {% if zones %}
+  <details class="zones">
+    <summary>Zones</summary>
+    <div class="zone-list">
+      {% for z in zones %}
+      <div>
+        <h3><span class="badge zone z{{ z.number }}">{{ z.number }}</span> {{ z.name }}</h3>
+        {% for code, names in z.places %}<p><b>{{ code }}</b> {{ names | join(', ') }}</p>{% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+
   <div id="map"></div>
 
   {% if not listings %}<p class="empty">Nothing here yet. Run <code>python -m homenotif fetch</code>.</p>{% endif %}
   <div class="grid">
     {% for l in listings %}
-    <div class="card {{ 'dim' if not l.matched }}" id="l{{ l.id }}">
+    <div class="card {{ 'dim' if not l.matched }} {{ 'zoned z%d' % l.zone if l.zone }}" id="l{{ l.id }}">
       {% if l.image_url %}<a href="{{ l.url }}" target="_blank" rel="noopener"><img src="{{ l.image_url }}" alt="" loading="lazy"></a>{% endif %}
       <div class="body">
         <a class="title" href="{{ l.url }}" target="_blank" rel="noopener">{{ l.title }}</a>
         <div class="facts"><b>CHF {{ l.rent | chf }}</b> · {{ l.rooms or '?' }} rooms{% if l.area %} · {{ l.area | int }} m²{% endif %}</div>
         <div class="meta">{{ l.street or '' }} {{ l.zipcode or '' }} {{ l.city or '' }}</div>
         <div class="meta">
+          {% if l.zone %}<span class="badge zone z{{ l.zone }}">Zone {{ l.zone }}</span>{% endif %}
           <span class="badge">{{ l.source }}</span>
           {% for d in l.also_on %}<a class="badge" href="{{ d.url }}" target="_blank" rel="noopener">also on {{ d.source }}</a>{% endfor %}
           {{ (l.published_at or l.first_seen) | when }}
@@ -84,11 +113,14 @@
   const center = {{ center | tojson }};
   const map = L.map('map');
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '&copy; OpenStreetMap'}).addTo(map);
+  const zoneColors = {1: '#2e8540', 2: '#1a5fb4', 3: '#c46200', 4: '#8a3ab9'};
   for (const p of points) {
     const link = document.createElement('a');
     link.href = '#l' + p.id;
     link.textContent = p.label;
-    L.marker([p.lat, p.lon]).addTo(map).bindPopup(link);
+    const color = zoneColors[p.zone] || '#77776f';
+    L.circleMarker([p.lat, p.lon], {radius: 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: 0.9})
+      .addTo(map).bindPopup(link);
   }
   function frame() {
     map.invalidateSize();

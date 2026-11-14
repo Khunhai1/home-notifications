@@ -1,11 +1,11 @@
-from homenotif import db
+from homenotif import db, npa
 from homenotif.config import DEFAULTS
-from homenotif.matching import fingerprint, matches, parse_rent, parse_rooms
+from homenotif.matching import evaluate, fingerprint, matches, parse_rent, parse_rooms
 from homenotif.models import Listing
 from homenotif.sources.email_alerts import listing_ref, parse_html
 
-SEARCH = DEFAULTS["search"] | {"min_rooms": 2.5, "max_rooms": 4.5, "max_rent": 2500,
-                               "center": [46.948, 7.447], "radius_km": 8, "exclude_keywords": ["WG"]}
+SEARCH = DEFAULTS["search"] | {"min_rooms": 2.5, "max_rooms": 4.5, "max_rent": 2500, "exclude_keywords": ["WG"]}
+CFG = {"search": SEARCH, "zones": [{"name": "City", "npa": [3011]}, {"name": "Around", "npa": [3072, 3084]}]}
 
 ALERT_HTML = """
 <a href="https://www.homegate.ch/mieten/4001234567?utm_source=alert"><img src="x.jpg" alt=""></a>
@@ -32,12 +32,22 @@ def test_parsers():
 
 
 def test_matches():
-    assert matches(flat(rent=2000, rooms=3.5, lat=46.95, lon=7.45), SEARCH)
+    assert matches(flat(rent=2000, rooms=3.5), SEARCH)
     assert not matches(flat(rent=2600, rooms=3.5), SEARCH)
     assert not matches(flat(rent=2000, rooms=1.5), SEARCH)
-    assert not matches(flat(rent=2000, rooms=3.5, lat=47.37, lon=8.54), SEARCH)  # Zurich
     assert not matches(flat(rent=2000, rooms=3.5, title="Zimmer in WG"), SEARCH)
     assert matches(flat(), SEARCH)  # unknown values pass
+
+
+def test_zones():
+    assert evaluate(flat(rent=2000, rooms=3.5, zipcode=3011), CFG) == (True, 1)
+    assert evaluate(flat(rent=2000, rooms=3.5, zipcode=3084), CFG) == (True, 2)
+    assert evaluate(flat(rent=2000, rooms=3.5, zipcode=8001), CFG) == (False, None)  # Zurich
+    assert evaluate(flat(rent=2600, rooms=3.5, zipcode=3011), CFG) == (False, 1)
+    assert evaluate(flat(rent=2000, rooms=3.5), CFG) == (True, None)  # unknown postcode passes
+    assert "Ostermundigen" in npa.localities(3072)
+    south, west, north, east = npa.bbox([3011, 3084])
+    assert south < 46.93 < 46.95 < north and west < 7.44 < 7.45 < east
 
 
 def test_listing_ref():
@@ -62,12 +72,23 @@ def test_db_dedup_and_notify(tmp_path):
     a = flat(rent=2150, rooms=3.5, zipcode=3007)
     b = flat(source="homegate", source_id="9", rent=2150, rooms=3.5, zipcode=3007)
     assert fingerprint(a) == fingerprint(b)
-    assert db.insert(conn, a, True, silent=False)
-    assert not db.insert(conn, a, True, silent=False)
-    assert db.insert(conn, b, True, silent=False)
+    assert db.insert(conn, a, True, 1, silent=False)
+    assert not db.insert(conn, a, True, 1, silent=False)
+    assert db.insert(conn, b, True, 1, silent=False)
     pending = db.pending(conn)
     assert [r["source"] for r in pending] == ["flatfox"]  # the duplicate is not announced
     db.mark_notified(conn, [r["id"] for r in pending])
     assert db.pending(conn) == []
     rows = db.browse(conn)
     assert len(rows) == 1 and rows[0]["also_on"][0]["source"] == "homegate"
+
+
+def test_rematch_does_not_announce_old_listings(tmp_path):
+    conn = db.connect(tmp_path / "t.db")
+    db.insert(conn, flat(rent=2000, rooms=3.5, zipcode=8001), False, None, silent=False)
+    db.rematch(conn, lambda l: evaluate(l, CFG))
+    assert db.pending(conn) == []
+    db.rematch(conn, lambda l: (True, 1))
+    row = conn.execute("SELECT matched, zone, notified_at FROM listings").fetchone()
+    assert (row["matched"], row["zone"]) == (1, 1) and row["notified_at"]
+    assert db.pending(conn) == []

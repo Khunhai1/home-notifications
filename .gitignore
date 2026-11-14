@@ -1,5 +1,5 @@
 config.toml
-data/
+/data/
 __pycache__/
 *.pyc
 .venv/

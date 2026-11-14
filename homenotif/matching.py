@@ -1,4 +1,3 @@
-import math
 import re
 
 from .models import Listing
@@ -33,15 +32,26 @@ def parse_zip(text):
     return int(m.group(1)) if m else None
 
 
-def distance_km(lat1, lon1, lat2, lon2):
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
-    return 6371 * 2 * math.asin(math.sqrt(a))
+def zone_of(zipcode, zones):
+    """1-based number of the zone containing the postcode, or None."""
+    for number, zone in enumerate(zones, 1):
+        if zipcode in zone.get("npa", []):
+            return number
+    return None
+
+
+def evaluate(l: Listing, cfg: dict):
+    """(matches the criteria, zone number or None)."""
+    zone = zone_of(l.zipcode, cfg["zones"])
+    if cfg["zones"] and l.zipcode is not None and zone is None:
+        return False, None
+    return matches(l, cfg["search"]), zone
 
 
 def matches(l: Listing, s: dict) -> bool:
-    """Check a listing against the [search] criteria. Unknown values (e.g. an alert
-    email without a room count) pass - the source's own search already filtered them."""
+    """Check a listing against the [search] criteria (location is handled by the zones).
+    Unknown values (e.g. an alert email without a room count) pass - the source's own
+    search already filtered them."""
     if l.rent is not None:
         if s["max_rent"] and l.rent > s["max_rent"]:
             return False
@@ -51,11 +61,6 @@ def matches(l: Listing, s: dict) -> bool:
         if l.rooms < s["min_rooms"] or (s["max_rooms"] and l.rooms > s["max_rooms"]):
             return False
     if l.area is not None and l.area < s["min_area"]:
-        return False
-    if l.lat is not None and l.lon is not None and s["center"] and s["radius_km"]:
-        if distance_km(l.lat, l.lon, *s["center"]) > s["radius_km"]:
-            return False
-    elif l.zipcode is not None and s["zipcodes"] and l.zipcode not in s["zipcodes"]:
         return False
     text = f"{l.title} {l.description}".lower()
     return not any(k.lower() in text for k in s["exclude_keywords"])

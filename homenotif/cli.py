@@ -6,8 +6,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
-from . import config, db, notify
-from .matching import matches
+from . import config, db, notify, npa
+from .matching import evaluate
 from .sources import anibis, email_alerts, flatfox
 
 log = logging.getLogger("homenotif")
@@ -16,24 +16,28 @@ SOURCES = {"flatfox": flatfox.fetch, "anibis": anibis.fetch, "email_alerts": ema
 
 
 def fetch_all(cfg, conn):
+    # Listings already online in a zone you just added aren't news: import them without notifying.
+    area = ",".join(map(str, sorted(config.all_npas(cfg))))
     for name, fetch in SOURCES.items():
         if not cfg[name]["enabled"]:
             continue
         known = db.known_ids(conn, name)
+        new_area = db.get_state(conn, f"area:{name}") != area
         # First import of a site: store everything, but don't send hundreds of old listings by email.
-        silent = name != "email_alerts" and not known
+        silent = name != "email_alerts" and (not known or new_area)
         new = matched = 0
         try:
             for listing in fetch(cfg, known):
-                ok = matches(listing, cfg["search"])
-                if db.insert(conn, listing, ok, silent):
+                ok, zone = evaluate(listing, cfg)
+                if db.insert(conn, listing, ok, zone, silent):
                     new += 1
                     matched += ok
         except Exception:
             log.exception("%s failed", name)
             continue
+        db.set_state(conn, f"area:{name}", area)
         log.info("%s: %d new listings, %d match your criteria%s", name, new, matched,
-                 " (first import, no notification)" if silent and new else "")
+                 " (first import for these zones, no notification)" if silent and new else "")
 
 
 def notify_pending(cfg, conn):
@@ -50,6 +54,15 @@ def digest(cfg, conn):
         notify.send(cfg, rows, f"Daily digest: {len(rows)} flats from the last 24 hours")
     else:
         log.info("digest: nothing new in the last 24 hours")
+
+
+def show_zones(cfg):
+    if not cfg["zones"]:
+        print("No [[zones]] configured: listings from anywhere match.")
+    for number, zone in enumerate(cfg["zones"], 1):
+        print(f"\nZone {number}: {zone['name']}")
+        for code in zone.get("npa", []):
+            print(f"  {code}  {', '.join(npa.localities(code))}")
 
 
 def serve(cfg, conn):
@@ -74,9 +87,10 @@ def poll_forever(cfg):
 
 def main():
     parser = argparse.ArgumentParser(prog="homenotif", description="Apartment alerts for Swiss listing sites")
-    parser.add_argument("command", choices=["fetch", "digest", "serve", "run"],
+    parser.add_argument("command", choices=["fetch", "digest", "serve", "run", "zones"],
                         help="fetch: check all sources once and notify | digest: email the last 24h | "
-                             "serve: dashboard only | run: dashboard + check every poll_minutes")
+                             "serve: dashboard only | run: dashboard + check every poll_minutes | "
+                             "zones: list the configured zones with their localities")
     parser.add_argument("--config", default="config.toml")
     args = parser.parse_args()
 
@@ -84,7 +98,11 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     cfg = config.load(args.config)
+    if args.command == "zones":
+        show_zones(cfg)
+        return
     conn = db.connect(cfg["app"]["db_path"])
+    db.rematch(conn, lambda listing: evaluate(listing, cfg))
 
     if args.command == "fetch":
         fetch_all(cfg, conn)
