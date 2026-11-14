@@ -1,16 +1,12 @@
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
+import { parseFilter } from '$lib/filters';
 import { dashboard, db, setStatus, STATUSES, type Status } from '$lib/server/db';
 import { place } from '$lib/server/npa';
 
 export const load: PageServerLoad = async ({ url, platform }) => {
-	const p = url.searchParams;
-	const status = STATUSES.includes(p.get('status') as Status) ? (p.get('status') as Status) : '';
-	const zone = Math.max(0, Math.trunc(Number(p.get('zone')) || 0));
-	const source = p.get('source') ?? '';
-	const includeUnmatched = p.get('all') === '1';
-
-	const data = await dashboard(db(platform), { status, zone, source, includeUnmatched });
+	const filter = parseFilter(url.searchParams);
+	const data = await dashboard(db(platform), filter);
 	const zones = data.zones.map((z) => ({
 		...z,
 		places: z.npas.map((n) => place(n) ?? { npa: n, names: '', lat: NaN, lon: NaN })
@@ -23,7 +19,7 @@ export const load: PageServerLoad = async ({ url, platform }) => {
 			]
 		: null;
 
-	return { ...data, zones, center, filter: { status, zone, source, includeUnmatched } };
+	return { ...data, zones, center, filter };
 };
 
 export const actions: Actions = {

@@ -1,9 +1,9 @@
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
+import type { ListingFilter, Status } from '$lib/filters';
 import type { Criteria, ZoneInput } from './validation';
 
 export type Sql = NeonQueryFunction<false, false>;
-export type Status = 'new' | 'favorite' | 'applied' | 'hidden';
-export const STATUSES: Status[] = ['new', 'favorite', 'applied', 'hidden'];
+export { STATUSES, type Status } from '$lib/filters';
 
 export interface Listing {
 	id: number;
@@ -36,14 +36,6 @@ export interface Settings extends Criteria {
 	updated_at: string;
 }
 
-export interface ListingFilter {
-	/** '' = everything except hidden */
-	status: Status | '';
-	zone: number;
-	source: string;
-	includeUnmatched: boolean;
-}
-
 export function db(platform: App.Platform | undefined): Sql {
 	const url = platform?.env.DATABASE_URL;
 	if (!url) throw new Error('DATABASE_URL is not set');
@@ -53,6 +45,9 @@ export function db(platform: App.Platform | undefined): Sql {
 // The driver returns numeric columns as strings.
 const num = (v: unknown) => (v == null ? null : Number(v));
 const iso = (v: unknown) => (v == null ? null : new Date(v as string | Date).toISOString());
+
+/** Makes % and _ in user text match literally inside ILIKE. */
+const likeEscape = (text: string) => text.replace(/[\\%_]/g, (c) => '\\' + c);
 
 const listingsQuery = (sql: Sql, f: ListingFilter) => sql`
 	SELECT l.id, l.source, l.url, l.title, l.rent, l.rooms, l.area, l.zipcode, l.city, l.street,
@@ -66,7 +61,21 @@ const listingsQuery = (sql: Sql, f: ListingFilter) => sql`
 	  AND (CASE WHEN ${f.status} = '' THEN l.status <> 'hidden' ELSE l.status = ${f.status} END)
 	  AND (${f.zone}::int = 0 OR l.zone = ${f.zone}::int)
 	  AND (${f.source} = '' OR l.source = ${f.source})
-	ORDER BY COALESCE(l.published_at, l.first_seen) DESC
+	  AND (${f.maxRent}::numeric = 0 OR l.rent <= ${f.maxRent}::numeric)
+	  AND (${f.minRooms}::numeric = 0 OR l.rooms >= ${f.minRooms}::numeric)
+	  AND (${f.minArea}::numeric = 0 OR l.area >= ${f.minArea}::numeric)
+	  AND (${f.days}::int = 0 OR l.first_seen >= now() - make_interval(days => ${f.days}::int))
+	  AND (${f.q} = '' OR concat_ws(' ', l.title, l.description, l.street, l.city, l.zipcode::text)
+	                      ILIKE '%' || ${likeEscape(f.q)} || '%')
+	ORDER BY
+	  CASE WHEN ${f.sort} = 'price' THEN l.rent END ASC NULLS LAST,
+	  CASE WHEN ${f.sort} = 'price_desc' THEN l.rent END DESC NULLS LAST,
+	  CASE WHEN ${f.sort} = 'ppm2' THEN l.rent / NULLIF(l.area, 0) END ASC NULLS LAST,
+	  CASE WHEN ${f.sort} = 'area' THEN l.area END DESC NULLS LAST,
+	  CASE WHEN ${f.sort} = 'rooms' THEN l.rooms END DESC NULLS LAST,
+	  CASE WHEN ${f.sort} = 'zone' THEN l.zone END ASC NULLS LAST,
+	  CASE WHEN ${f.sort} = 'oldest' THEN COALESCE(l.published_at, l.first_seen) END ASC,
+	  COALESCE(l.published_at, l.first_seen) DESC
 	LIMIT 300`;
 
 const zonesQuery = (sql: Sql) => sql`
