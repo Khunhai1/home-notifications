@@ -14,9 +14,10 @@ def _chf(value):
     return f"{value:,.0f}".replace(",", "'") if value is not None else "?"
 
 
-def _when(iso):
+def _when(value):
     try:
-        return datetime.fromisoformat(iso).astimezone().strftime("%d %b %H:%M")
+        when = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        return when.astimezone().strftime("%d %b %H:%M")
     except (TypeError, ValueError):
         return ""
 

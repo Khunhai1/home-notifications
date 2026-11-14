@@ -1,10 +1,9 @@
 from homenotif import db, npa
-from homenotif.config import DEFAULTS
 from homenotif.matching import evaluate, fingerprint, matches, parse_rent, parse_rooms
 from homenotif.models import Listing
 from homenotif.sources.email_alerts import listing_ref, parse_html
 
-SEARCH = DEFAULTS["search"] | {"min_rooms": 2.5, "max_rooms": 4.5, "max_rent": 2500, "exclude_keywords": ["WG"]}
+SEARCH = {"min_rent": 0, "min_area": 0, "min_rooms": 2.5, "max_rooms": 4.5, "max_rent": 2500, "exclude_keywords": ["WG"]}
 CFG = {"search": SEARCH, "zones": [{"name": "City", "npa": [3011]}, {"name": "Around", "npa": [3072, 3084]}]}
 
 ALERT_HTML = """
@@ -67,8 +66,7 @@ def test_alert_email():
     assert found["comparis"].source_id == "37536669" and found["comparis"].rent == 2400
 
 
-def test_db_dedup_and_notify(tmp_path):
-    conn = db.connect(tmp_path / "t.db")
+def test_db_dedup_and_notify(conn):
     a = flat(rent=2150, rooms=3.5, zipcode=3007)
     b = flat(source="homegate", source_id="9", rent=2150, rooms=3.5, zipcode=3007)
     assert fingerprint(a) == fingerprint(b)
@@ -79,16 +77,40 @@ def test_db_dedup_and_notify(tmp_path):
     assert [r["source"] for r in pending] == ["flatfox"]  # the duplicate is not announced
     db.mark_notified(conn, [r["id"] for r in pending])
     assert db.pending(conn) == []
-    rows = db.browse(conn)
-    assert len(rows) == 1 and rows[0]["also_on"][0]["source"] == "homegate"
+    dup = conn.execute("SELECT duplicate_of FROM listings WHERE source = 'homegate'").fetchone()
+    assert dup["duplicate_of"] == pending[0]["id"]
 
 
-def test_rematch_does_not_announce_old_listings(tmp_path):
-    conn = db.connect(tmp_path / "t.db")
+def test_silent_insert_is_not_announced(conn):
+    assert db.insert(conn, flat(rent=2000, rooms=3, zipcode=3011), True, 1, silent=True)
+    assert db.pending(conn) == []
+
+
+def test_rematch_does_not_announce_old_listings(conn):
     db.insert(conn, flat(rent=2000, rooms=3.5, zipcode=8001), False, None, silent=False)
-    db.rematch(conn, lambda l: evaluate(l, CFG))
+    assert db.rematch(conn, lambda l: evaluate(l, CFG)) == 0
     assert db.pending(conn) == []
-    db.rematch(conn, lambda l: (True, 1))
+    assert db.rematch(conn, lambda l: (True, 1)) == 1
     row = conn.execute("SELECT matched, zone, notified_at FROM listings").fetchone()
-    assert (row["matched"], row["zone"]) == (1, 1) and row["notified_at"]
+    assert (row["matched"], row["zone"]) == (True, 1) and row["notified_at"]
     assert db.pending(conn) == []
+
+
+def test_settings_round_trip(conn):
+    search = {"min_rooms": 2, "max_rooms": 3.5, "min_rent": 0, "max_rent": 1800, "min_area": 40,
+              "exclude_keywords": ["WG"]}
+    zones = [{"name": "City", "npa": [3012, 3011]}, {"name": "Around", "npa": [3084]}]
+    db.save_settings(conn, search, zones, ["https://www.anibis.ch/de/q/x"], "me@example.com")
+    s = db.load_settings(conn)
+    assert s["search"] == search
+    assert s["zones"] == [{"name": "City", "npa": [3011, 3012]}, {"name": "Around", "npa": [3084]}]
+    assert s["anibis_urls"] == ["https://www.anibis.ch/de/q/x"] and s["notify_to"] == "me@example.com"
+    db.save_settings(conn, search, zones[1:], [], "")
+    assert [z["name"] for z in db.load_settings(conn)["zones"]] == ["Around"]
+
+
+def test_state(conn):
+    assert db.get_state(conn, "k") is None
+    db.set_state(conn, "k", "1")
+    db.set_state(conn, "k", "2")
+    assert db.get_state(conn, "k") == "2"
