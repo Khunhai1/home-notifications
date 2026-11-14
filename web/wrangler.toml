@@ -1,0 +1,7 @@
+name = "home-notifications"
+pages_build_output_dir = ".svelte-kit/cloudflare"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Secrets (DATABASE_URL, ACCESS_AUD, ACCESS_TEAM_DOMAIN, GITHUB_TOKEN, GITHUB_REPO) are set in the
+# Pages project settings. For local dev put them in .dev.vars (gitignored), with DEV_USER to skip Access.
