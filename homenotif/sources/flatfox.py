@@ -72,6 +72,10 @@ def fetch(cfg, known_ids):
         new = [pk for pk in pins if str(pk) not in known_ids and pk not in too_expensive]
         log.info("flatfox: %d pins, %d already stored, %d over max rent, fetching %d: %s",
                  len(pins), len(known), len(too_expensive), len(new), sorted(new))
+        cheapest = sorted(too_expensive, key=lambda pk: pins[pk].get("price_display") or 0)[:15]
+        log.info("flatfox: cheapest over max rent: %s", ", ".join(
+            f"{pk}={pins[pk].get('price_display')} {pins[pk].get('price_display_type')}/{pins[pk].get('price_unit')}"
+            for pk in cheapest))
         for i in range(0, len(new), CHUNK):
             chunk = new[i:i + CHUNK]
             params = [("pk", pk) for pk in chunk] + [("expand", "cover_image"), ("limit", CHUNK)]
