@@ -6,5 +6,5 @@ USER_AGENT = (
 )
 
 
-def http_client():
-    return httpx.Client(headers={"User-Agent": USER_AGENT, "Accept-Language": "de-CH,de;q=0.9"}, timeout=30)
+def http_client(user_agent=USER_AGENT):
+    return httpx.Client(headers={"User-Agent": user_agent, "Accept-Language": "de-CH,de;q=0.9"}, timeout=30)

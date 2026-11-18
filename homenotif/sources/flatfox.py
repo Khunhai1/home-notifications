@@ -1,5 +1,6 @@
 """Flatfox public API: /pin/ lists listing ids inside a bounding box, /public-listing/ returns details."""
 import logging
+import time
 
 from .. import npa
 from ..config import all_npas
@@ -10,8 +11,23 @@ API = "https://flatfox.ch/api/v1"
 SITE = "https://flatfox.ch"
 MAX_PINS = 1000  # API limit per request
 CHUNK = 50
+DELAY = 1.0  # seconds between requests: Flatfox publishes no rate limit, so stay well below any
+USER_AGENT = "home-notifications (personal apartment alert; +https://github.com/Khunhai1/home-notifications)"
 
 log = logging.getLogger(__name__)
+
+
+class Blocked(RuntimeError):
+    """Flatfox refused us (rate limit or ban): stop for this run instead of insisting."""
+
+
+def _get(client, url, params):
+    time.sleep(DELAY)
+    r = client.get(url, params=params)
+    if r.status_code in (403, 429):
+        raise Blocked(f"flatfox answered {r.status_code} to {url}; skipping the rest of this run")
+    r.raise_for_status()
+    return r.json()
 
 
 def _pins(client, box, categories, depth=0):
@@ -19,10 +35,8 @@ def _pins(client, box, categories, depth=0):
     params = [("south", south), ("west", west), ("north", north), ("east", east),
               ("max_count", MAX_PINS), ("offer_type", "RENT")]
     params += [("object_category", c) for c in categories]
-    r = client.get(f"{API}/pin/", params=params)
-    r.raise_for_status()
-    pins = {p["pk"]: p for p in r.json()}
-    log.info("flatfox: %d pins in box %.4f,%.4f,%.4f,%.4f (depth %d)", len(pins), *box, depth)
+    pins = {p["pk"]: p for p in _get(client, f"{API}/pin/", params)}
+    log.info("flatfox: %d pins in search box (depth %d)", len(pins), depth)  # no coordinates: the logs are public
     if len(pins) >= MAX_PINS and depth < 4:
         # result was cut off: split the box in four and ask again
         mid_lat, mid_lon = (south + north) / 2, (west + east) / 2
@@ -58,32 +72,28 @@ def _to_listing(r):
     )
 
 
+def _details(client, pks):
+    """Full listings for the given ids, CHUNK per request. Listings no longer online are left out."""
+    for i in range(0, len(pks), CHUNK):
+        chunk = pks[i:i + CHUNK]
+        params = [("pk", pk) for pk in chunk] + [("expand", "cover_image"), ("limit", CHUNK)]
+        results = _get(client, f"{API}/public-listing/", params)["results"]
+        missing = set(chunk) - {item["pk"] for item in results}
+        if missing:
+            log.warning("flatfox: no details returned for %d listings", len(missing))
+        for item in results:
+            yield _to_listing(item)
+
+
 def fetch(cfg, known_ids):
     npas = all_npas(cfg)
     if not npas:
         raise RuntimeError("flatfox needs at least one [[zones]] entry to know where to search")
-    with http_client() as client:
+    with http_client(USER_AGENT) as client:
         # the box around all zones; listings in it but outside the zones are filtered out later
         pins = _pins(client, npa.bbox(npas), cfg["flatfox"]["categories"])
-        max_rent = cfg["search"]["max_rent"]
-        known = [pk for pk in pins if str(pk) in known_ids]
-        too_expensive = [pk for pk, p in pins.items()
-                         if str(pk) not in known_ids and max_rent and (p.get("price_display") or 0) > max_rent]
-        new = [pk for pk in pins if str(pk) not in known_ids and pk not in too_expensive]
-        log.info("flatfox: %d pins, %d already stored, %d over max rent, fetching %d: %s",
-                 len(pins), len(known), len(too_expensive), len(new), sorted(new))
-        cheapest = sorted(too_expensive, key=lambda pk: pins[pk].get("price_display") or 0)[:15]
-        log.info("flatfox: cheapest over max rent: %s", ", ".join(
-            f"{pk}={pins[pk].get('price_display')} {pins[pk].get('price_display_type')}/{pins[pk].get('price_unit')}"
-            for pk in cheapest))
-        for i in range(0, len(new), CHUNK):
-            chunk = new[i:i + CHUNK]
-            params = [("pk", pk) for pk in chunk] + [("expand", "cover_image"), ("limit", CHUNK)]
-            r = client.get(f"{API}/public-listing/", params=params)
-            r.raise_for_status()
-            results = r.json()["results"]
-            missing = set(chunk) - {item["pk"] for item in results}
-            if missing:
-                log.warning("flatfox: no details returned for %s", sorted(missing))
-            for item in results:
-                yield _to_listing(item)
+        # Every unknown listing is fetched, whatever its price: the pin's price_display is sometimes
+        # CHF 400-500 above the real rent, so filtering on it dropped flats that match.
+        new = sorted(pk for pk in pins if str(pk) not in known_ids)
+        log.info("flatfox: %d pins, %d already stored, fetching %d", len(pins), len(pins) - len(new), len(new))
+        yield from _details(client, new)
