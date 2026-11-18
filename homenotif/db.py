@@ -83,6 +83,22 @@ def known_ids(conn, source):
     return {r["source_id"] for r in conn.execute("SELECT source_id FROM listings WHERE source = %s", (source,))}
 
 
+def over_budget(conn, source, max_rent):
+    """source_id -> stored rent, for listings that don't match and cost more than max_rent."""
+    rows = conn.execute("SELECT source_id, rent FROM listings WHERE source = %s AND NOT matched AND rent > %s",
+                        (source, max_rent))
+    return {r["source_id"]: r["rent"] for r in rows}
+
+
+def update_rent(conn, l: Listing, matched: bool, zone):
+    """Store a new rent. A listing that starts matching because it got cheaper is news: it is announced."""
+    conn.execute(
+        "UPDATE listings SET rent = %s, matched = %s, zone = %s, "
+        "notified_at = CASE WHEN %s AND NOT matched THEN NULL ELSE notified_at END "
+        "WHERE source = %s AND source_id = %s",
+        (l.rent, matched, zone, matched, l.source, l.source_id))
+
+
 def insert(conn, l: Listing, matched: bool, zone, silent: bool, status="new") -> bool:
     """Store a listing. Returns False if it was already known. `silent` stores it
     as already notified (used for the first import of a source)."""

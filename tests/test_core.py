@@ -96,6 +96,16 @@ def test_rematch_does_not_announce_old_listings(conn):
     assert db.pending(conn) == []
 
 
+def test_price_drop_is_announced(conn):
+    db.insert(conn, flat(rent=2900, rooms=3.5, zipcode=3011), False, 1, silent=True)
+    db.insert(conn, flat(source_id="2", rent=2000, rooms=3.5, zipcode=3011), True, 1, silent=True)
+    assert db.over_budget(conn, "flatfox", 2500) == {"1": 2900}
+    cheaper = flat(rent=2400, rooms=3.5, zipcode=3011)
+    db.update_rent(conn, cheaper, *evaluate(cheaper, CFG))
+    assert [(r["source_id"], r["rent"]) for r in db.pending(conn)] == [("1", 2400)]
+    assert db.over_budget(conn, "flatfox", 2500) == {}
+
+
 def test_settings_round_trip(conn):
     search = {"min_rooms": 2, "max_rooms": 3.5, "min_rent": 0, "max_rent": 1800, "min_area": 40,
               "exclude_keywords": ["WG"]}

@@ -97,3 +97,15 @@ def fetch(cfg, known_ids):
         new = sorted(pk for pk in pins if str(pk) not in known_ids)
         log.info("flatfox: %d pins, %d already stored, fetching %d", len(pins), len(pins) - len(new), len(new))
         yield from _details(client, new)
+
+
+def recheck(cfg, source_ids):
+    """Current details of the stored listings in `source_ids` that are still online, to catch price drops."""
+    npas = all_npas(cfg)
+    if not npas or not source_ids:
+        return
+    with http_client(USER_AGENT) as client:
+        pins = _pins(client, npa.bbox(npas), cfg["flatfox"]["categories"])
+        online = sorted(pk for pk in pins if str(pk) in source_ids)
+        log.info("flatfox: re-checking the price of %d listings stored as too expensive", len(online))
+        yield from _details(client, online)

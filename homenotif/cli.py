@@ -13,6 +13,7 @@ from .sources import anibis, email_alerts, flatfox
 log = logging.getLogger("homenotif")
 
 SOURCES = {"flatfox": flatfox.fetch, "anibis": anibis.fetch, "email_alerts": email_alerts.fetch}
+RECHECK_EVERY = timedelta(hours=6)  # how often stored over-budget Flatfox listings are checked for price drops
 
 
 def fetch_all(cfg, conn):
@@ -39,6 +40,32 @@ def fetch_all(cfg, conn):
         log.info("%s: %d new listings, %d match your criteria%s", name, new, matched,
                  " (first import for these zones, no notification)" if silent and new else "")
     db.set_state(conn, "last_fetch", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+
+def recheck_prices(cfg, conn):
+    """Flatfox listings stored as too expensive are checked again now and then, in case the rent dropped."""
+    max_rent = cfg["search"]["max_rent"]
+    if not (cfg["flatfox"]["enabled"] and max_rent):
+        return
+    now = datetime.now(timezone.utc)
+    last = db.get_state(conn, "recheck:flatfox")
+    if last and now - datetime.fromisoformat(last) < RECHECK_EVERY:
+        return
+    stored = db.over_budget(conn, "flatfox", max_rent)
+    changed = cheaper = 0
+    try:
+        for listing in flatfox.recheck(cfg, set(stored)):
+            if listing.rent is None or listing.rent == stored[listing.source_id]:
+                continue
+            ok, zone = evaluate(listing, cfg)
+            db.update_rent(conn, listing, ok, zone)
+            changed += 1
+            cheaper += ok
+    except Exception:
+        log.exception("flatfox price re-check failed")
+        return
+    db.set_state(conn, "recheck:flatfox", now.isoformat(timespec="seconds"))
+    log.info("flatfox: %d prices changed, %d listings now within budget", changed, cheaper)
 
 
 def notify_pending(cfg, conn):
@@ -118,6 +145,7 @@ def main():
             show_zones(cfg)
         elif args.command == "fetch":
             fetch_all(cfg, conn)
+            recheck_prices(cfg, conn)
             notify_pending(cfg, conn)
         elif args.command == "digest":
             digest(cfg, conn)
