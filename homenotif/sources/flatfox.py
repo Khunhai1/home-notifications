@@ -1,4 +1,6 @@
 """Flatfox public API: /pin/ lists listing ids inside a bounding box, /public-listing/ returns details."""
+import logging
+
 from .. import npa
 from ..config import all_npas
 from ..models import Listing
@@ -9,6 +11,8 @@ SITE = "https://flatfox.ch"
 MAX_PINS = 1000  # API limit per request
 CHUNK = 50
 
+log = logging.getLogger(__name__)
+
 
 def _pins(client, box, categories, depth=0):
     south, west, north, east = box
@@ -18,6 +22,7 @@ def _pins(client, box, categories, depth=0):
     r = client.get(f"{API}/pin/", params=params)
     r.raise_for_status()
     pins = {p["pk"]: p for p in r.json()}
+    log.info("flatfox: %d pins in box %.4f,%.4f,%.4f,%.4f (depth %d)", len(pins), *box, depth)
     if len(pins) >= MAX_PINS and depth < 4:
         # result was cut off: split the box in four and ask again
         mid_lat, mid_lon = (south + north) / 2, (west + east) / 2
@@ -61,11 +66,20 @@ def fetch(cfg, known_ids):
         # the box around all zones; listings in it but outside the zones are filtered out later
         pins = _pins(client, npa.bbox(npas), cfg["flatfox"]["categories"])
         max_rent = cfg["search"]["max_rent"]
-        new = [pk for pk, p in pins.items()
-               if str(pk) not in known_ids and not (max_rent and (p.get("price_display") or 0) > max_rent)]
+        known = [pk for pk in pins if str(pk) in known_ids]
+        too_expensive = [pk for pk, p in pins.items()
+                         if str(pk) not in known_ids and max_rent and (p.get("price_display") or 0) > max_rent]
+        new = [pk for pk in pins if str(pk) not in known_ids and pk not in too_expensive]
+        log.info("flatfox: %d pins, %d already stored, %d over max rent, fetching %d: %s",
+                 len(pins), len(known), len(too_expensive), len(new), sorted(new))
         for i in range(0, len(new), CHUNK):
-            params = [("pk", pk) for pk in new[i:i + CHUNK]] + [("expand", "cover_image"), ("limit", CHUNK)]
+            chunk = new[i:i + CHUNK]
+            params = [("pk", pk) for pk in chunk] + [("expand", "cover_image"), ("limit", CHUNK)]
             r = client.get(f"{API}/public-listing/", params=params)
             r.raise_for_status()
-            for item in r.json()["results"]:
+            results = r.json()["results"]
+            missing = set(chunk) - {item["pk"] for item in results}
+            if missing:
+                log.warning("flatfox: no details returned for %s", sorted(missing))
+            for item in results:
                 yield _to_listing(item)
